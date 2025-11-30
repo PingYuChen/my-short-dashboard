@@ -14,7 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 st.set_page_config(page_title="短線操作", layout="wide", initial_sidebar_state="collapsed")
 
 st.title("📱 短線操作 (Smart Trader)")
-st.caption("AI 驅動的台美股資金流向與技術分析 | V2.0 完美復刻版")
+st.caption("AI 驅動的台美股資金流向與技術分析 | V2.1 介面優化版")
 
 # --- 側邊欄 ---
 menu = st.sidebar.radio("功能選單", ["1. 市場大盤戰情 (美/台)", "2. 個股全方位診斷"])
@@ -40,6 +40,26 @@ def get_tw_hot_sectors():
         return pd.DataFrame(sector_data)
     except:
         return None
+
+# 新增：抓取個股中文名稱
+def get_stock_name(ticker):
+    # 如果是台股
+    if ".TW" in ticker.upper() or ".TWO" in ticker.upper():
+        try:
+            url = f"https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockId;stockId={ticker}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(url, headers=headers, verify=False, timeout=3)
+            data = r.json()
+            return data.get('symbolName', ticker)
+        except:
+            return ticker
+    # 美股或其他
+    else:
+        try:
+            t = yf.Ticker(ticker)
+            return t.info.get('shortName', ticker)
+        except:
+            return ticker
 
 # ==========================================
 # 功能 1: 市場大盤戰情
@@ -132,7 +152,7 @@ if menu == "1. 市場大盤戰情 (美/台)":
             except: st.error("無法取得台股資料")
 
 # ==========================================
-# 功能 2: 個股全方位診斷 (V1.8 完整邏輯復刻)
+# 功能 2: 個股全方位診斷
 # ==========================================
 elif menu == "2. 個股全方位診斷":
     st.header("🔎 個股診斷")
@@ -141,8 +161,11 @@ elif menu == "2. 個股全方位診斷":
     period_input = st.selectbox("週期", ["3個月", "6個月", "1年"], index=1)
         
     if st.button("🚀 開始深度診斷", use_container_width=True):
-        with st.spinner(f'AI 正在進行多因子交叉分析...'):
+        with st.spinner(f'AI 正在連線交易所獲取 {ticker_input} 資訊...'):
             try:
+                # 0. 獲取股名
+                stock_name = get_stock_name(ticker_input)
+
                 # 1. 數據獲取
                 p_map = {"3個月": "3mo", "6個月": "6mo", "1年": "1y"}
                 df = yf.Ticker(ticker_input).history(period=p_map[period_input])
@@ -158,8 +181,87 @@ elif menu == "2. 個股全方位診斷":
                     df.ta.stoch(append=True) 
                     df.ta.macd(append=True)
                     df.ta.bbands(length=20, std=2, append=True)
+
+                    # 3. 關鍵數據提取
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2]
+                    close = latest['Close']
+                    pct_change = calculate_change(close, prev['Close'])
+                    high_price = df['High'].max()
                     
-                    # 3. 繪圖 (保留 V1.9 紅漲綠跌)
+                    sma20 = latest.get('SMA_20', 0)
+                    sma60 = latest.get('SMA_60', 0)
+                    bbu = latest.get('BBU_20_2.0', 0)
+                    bbl = latest.get('BBL_20_2.0', 0)
+                    
+                    # 4. 壓力支撐計算
+                    resistances = []
+                    supports = []
+                    for price, name in [(sma20, "月線"), (sma60, "季線"), (bbu, "布林上"), (bbl, "布林下"), (high_price, "前高")]:
+                        if price > 0:
+                            if close < price: resistances.append((price, name))
+                            elif close > price: supports.append((price, name))
+                    
+                    resistances.sort(key=lambda x: x[0])
+                    supports.sort(key=lambda x: x[0], reverse=True)
+                    nearest_res = resistances[0] if resistances else (None, "無")
+                    nearest_sup = supports[0] if supports else (None, "無")
+
+                    # --- UI 優化區塊：股名與關鍵價位 ---
+                    st.markdown("---")
+                    st.subheader(f"{stock_name} ({ticker_input.upper()})")
+                    
+                    # 關鍵價位戰情板 (支撐 | 現價 | 壓力)
+                    kp1, kp2, kp3 = st.columns(3)
+                    
+                    with kp1:
+                        if nearest_sup[0]:
+                            st.metric("📉 下方支撐", f"${nearest_sup[0]:.2f}", nearest_sup[1])
+                        else:
+                            st.metric("📉 下方支撐", "深淵", "無")
+                    
+                    with kp2:
+                        st.metric("💰 目前股價", f"${close:.2f}", f"{pct_change}%", delta_color="normal") # 台股紅漲綠跌邏輯自動適配
+                    
+                    with kp3:
+                        if nearest_res[0]:
+                            st.metric("📈 上方壓力", f"${nearest_res[0]:.2f}", nearest_res[1], delta_color="inverse")
+                        else:
+                            st.metric("📈 上方壓力", "天空", "無")
+
+                    # 5. AI 操作建議
+                    # 邏輯計算
+                    score = 0
+                    if close > sma20: score += 1
+                    sma5 = latest.get('SMA_5', 0)
+                    if sma5 > sma20: score += 1
+                    macd_hist = latest.get('MACDh_12_26_9', 0)
+                    if macd_hist > 0: score += 1
+                    
+                    advice = ""
+                    color_code = "blue"
+                    
+                    if score == 3:
+                        advice = "🔥 **強勢多頭**：趨勢向上且動能強。"
+                        if nearest_res[0] and (nearest_res[0]-close)/close < 0.02:
+                            advice += f" 但逼近壓力 **${nearest_res[0]:.2f}**，勿追高。"
+                            color_code = "orange"
+                        else:
+                            advice += " 上方空間大，可順勢操作。"
+                            color_code = "green"
+                    elif score <= 1:
+                        advice = "🐻 **空頭弱勢**：建議觀望。"
+                        color_code = "red"
+                    else:
+                        advice = "📈 **震盪整理**：拉回支撐找買點。"
+                        color_code = "green"
+
+                    # 顯示 AI 總結
+                    if color_code == "green": st.success(f"💡 AI 建議：{advice}")
+                    elif color_code == "orange": st.warning(f"💡 AI 建議：{advice}")
+                    else: st.error(f"💡 AI 建議：{advice}")
+
+                    # 6. 繪圖 (紅漲綠跌)
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_width=[0.2, 0.7])
                     fig.add_trace(go.Candlestick(
                         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線',
@@ -179,33 +281,9 @@ elif menu == "2. 個股全方位診斷":
                     fig.update_layout(xaxis_rangeslider_visible=False, height=450, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # 4. 數據提取與復刻 V1.8 邏輯
-                    latest = df.iloc[-1]
-                    prev = df.iloc[-2]
-                    close = latest['Close']
-                    high_price = df['High'].max()
+                    # 7. 詳細技術分析 (V2.0 不簡化)
                     
-                    sma20 = latest.get('SMA_20', 0)
-                    sma60 = latest.get('SMA_60', 0)
-                    bbu = latest.get('BBU_20_2.0', 0)
-                    bbl = latest.get('BBL_20_2.0', 0)
-                    
-                    # 壓力支撐
-                    resistances = []
-                    supports = []
-                    for price, name in [(sma20, "月線"), (sma60, "季線"), (bbu, "布林上"), (bbl, "布林下"), (high_price, "前高")]:
-                        if price > 0:
-                            if close < price: resistances.append((price, name))
-                            elif close > price: supports.append((price, name))
-                    
-                    resistances.sort(key=lambda x: x[0])
-                    supports.sort(key=lambda x: x[0], reverse=True)
-                    nearest_res = resistances[0] if resistances else (None, "無")
-                    nearest_sup = supports[0] if supports else (None, "無")
-
-                    # 詳細報告邏輯 (復刻 V1.8)
-                    sma5 = latest.get('SMA_5', 0)
-                    macd_hist = latest.get('MACDh_12_26_9', 0)
+                    # 準備詳細訊息
                     k = latest.get('STOCHk_14_3_3', 50)
                     d = latest.get('STOCHd_14_3_3', 50)
                     prev_k = prev.get('STOCHk_14_3_3', 50)
@@ -213,82 +291,39 @@ elif menu == "2. 個股全方位診斷":
                     rsi = latest.get('RSI_14', 50)
                     vol_ratio = latest['Volume'] / df['Volume'].rolling(5).mean().iloc[-1]
                     
-                    # A. 趨勢細節
-                    trend_score = 0
+                    # 趨勢訊息
                     trend_msgs = []
-                    if close > sma20:
-                        trend_msgs.append("✅ 站上月線 (20MA)，波段偏多。")
-                        trend_score += 1
-                    else: trend_msgs.append("🔻 跌破月線，上方有壓。")
-                        
-                    if sma5 > sma20:
-                        trend_msgs.append("✅ 均線黃金排列 (5MA > 20MA)。")
-                        trend_score += 1
-                    
-                    if macd_hist > 0:
-                        trend_msgs.append("✅ MACD 紅柱，多方動能增強。")
-                        trend_score += 1
-                    else: trend_msgs.append("🔻 MACD 綠柱，空方動能主導。")
+                    if close > sma20: trend_msgs.append("✅ 站上月線，波段偏多")
+                    else: trend_msgs.append("🔻 跌破月線，上方有壓")
+                    if sma5 > sma20: trend_msgs.append("✅ 均線黃金排列")
+                    if macd_hist > 0: trend_msgs.append("✅ MACD 紅柱動能強")
+                    else: trend_msgs.append("🔻 MACD 綠柱動能弱")
 
-                    # B. 轉折細節
+                    # 轉折訊息
                     mom_msgs = []
-                    if k > d and prev_k < prev_d: mom_msgs.append("🔥 **KD 黃金交叉**：低檔轉折訊號。")
-                    elif k < d and prev_k > prev_d: mom_msgs.append("❄️ **KD 死亡交叉**：高檔轉折訊號。")
-                    else: mom_msgs.append(f"⚪ KD 無明顯交叉 (K:{k:.0f})。")
+                    if k > d and prev_k < prev_d: mom_msgs.append("🔥 **KD 黃金交叉**")
+                    elif k < d and prev_k > prev_d: mom_msgs.append("❄️ **KD 死亡交叉**")
+                    else: mom_msgs.append("⚪ KD 無明顯訊號")
                     
-                    if rsi > 80: mom_msgs.append("⚠️ RSI 高檔過熱，勿追價。")
-                    elif rsi < 20: mom_msgs.append("🟢 RSI 超賣，醞釀反彈。")
-                    else: mom_msgs.append(f"⚪ RSI {rsi:.1f} 合理區間。")
+                    if rsi > 80: mom_msgs.append("⚠️ RSI 高檔過熱")
+                    elif rsi < 20: mom_msgs.append("🟢 RSI 超賣醞釀反彈")
+                    else: mom_msgs.append(f"⚪ RSI {rsi:.1f} 正常")
 
-                    # C. 資金/通道細節
+                    # 資金訊息
                     vol_msgs = []
-                    if vol_ratio > 1.5: vol_msgs.append(f"🔥 今日爆量 ({vol_ratio:.1f}x)，人氣匯集。")
-                    elif vol_ratio < 0.6: vol_msgs.append(f"💤 今日量縮 ({vol_ratio:.1f}x)，觀望氣氛。")
-                    else: vol_msgs.append("⚪ 量能溫和。")
+                    if vol_ratio > 1.5: vol_msgs.append(f"🔥 爆量 ({vol_ratio:.1f}x)")
+                    elif vol_ratio < 0.6: vol_msgs.append(f"💤 量縮 ({vol_ratio:.1f}x)")
+                    else: vol_msgs.append("⚪ 量能溫和")
                     
-                    if close > bbu: vol_msgs.append("⚠️ 觸及布林上緣，乖離偏大。")
-                    elif close < bbl: vol_msgs.append("🟢 觸及布林下緣，有支撐機會。")
-
-                    # 操作建議
-                    advice = ""
-                    color_code = "blue"
-                    if trend_score == 3:
-                        advice = "🔥 **強勢多頭**：趨勢向上。"
-                        if nearest_res[0] and (nearest_res[0]-close)/close < 0.02:
-                            advice += f" 但逼近壓力 **${nearest_res[0]:.2f}**，勿追高。"
-                            color_code = "orange"
-                        else:
-                            advice += " 可順勢操作。"
-                            color_code = "green"
-                    elif trend_score <= 1:
-                        advice = "🐻 **空頭弱勢**：建議觀望。"
-                        color_code = "red"
-                    else:
-                        advice = "📈 **震盪整理**：拉回找買點。"
-                        color_code = "green"
-
-                    # 5. UI 顯示 (恢復 V1.8 豐富佈局)
-                    st.markdown("### 💡 AI 操作總結")
-                    if color_code == "green": st.success(advice)
-                    elif color_code == "orange": st.warning(advice)
-                    else: st.error(advice)
-
-                    st.markdown("#### 🛑 關鍵價位")
-                    kp1, kp2 = st.columns(2)
-                    with kp1:
-                        if nearest_res[0]: st.metric("壓力", f"${nearest_res[0]:.2f}", nearest_res[1], delta_color="inverse")
-                        else: st.metric("壓力", "天空", "無")
-                    with kp2:
-                        if nearest_sup[0]: st.metric("支撐", f"${nearest_sup[0]:.2f}", nearest_sup[1])
-                        else: st.metric("支撐", "深淵", "無")
+                    if close > bbu: vol_msgs.append("⚠️ 觸及布林上緣")
+                    elif close < bbl: vol_msgs.append("🟢 觸及布林下緣")
 
                     st.markdown("#### 📝 詳細技術分析")
-                    # 這裡就是您要的：三欄詳細資料回歸！
                     c1, c2, c3 = st.columns(3)
                     
                     with c1:
                         st.markdown("**📈 趨勢面**")
-                        st.write(f"• 趨勢分: {trend_score}/3")
+                        st.write(f"• 趨勢分: {score}/3")
                         for m in trend_msgs: st.write(m)
                     
                     with c2:
