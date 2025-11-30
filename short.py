@@ -4,12 +4,17 @@ import pandas as pd
 import pandas_ta as ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
+import urllib3
 
-# --- 頁面設定 (手機優化) ---
+# --- 忽略 SSL 警告 ---
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- 頁面設定 ---
 st.set_page_config(page_title="短線操作", layout="wide", initial_sidebar_state="collapsed")
 
 st.title("📱 短線操作 (Smart Trader)")
-st.caption("AI 驅動的台美股資金流向與技術分析 | V1.7 旗艦版")
+st.caption("AI 驅動的台美股資金流向與技術分析 | V2.0 完美復刻版")
 
 # --- 側邊欄 ---
 menu = st.sidebar.radio("功能選單", ["1. 市場大盤戰情 (美/台)", "2. 個股全方位診斷"])
@@ -18,6 +23,23 @@ menu = st.sidebar.radio("功能選單", ["1. 市場大盤戰情 (美/台)", "2. 
 def calculate_change(current, previous):
     if previous == 0: return 0
     return round((current - previous) / previous * 100, 2)
+
+@st.cache_data(ttl=300)
+def get_tw_hot_sectors():
+    url = "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.rank;exchange=TAI;limit=10;period=day;rankType=industry"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers, verify=False, timeout=5)
+        data = r.json()
+        rank_list = data.get('list', [])
+        sector_data = []
+        for item in rank_list:
+            name = item.get('symbolName', '')
+            change_pct = item.get('changePercent', 0)
+            sector_data.append({"族群名稱": name, "漲跌幅": float(change_pct)})
+        return pd.DataFrame(sector_data)
+    except:
+        return None
 
 # ==========================================
 # 功能 1: 市場大盤戰情
@@ -34,7 +56,6 @@ if menu == "1. 市場大盤戰情 (美/台)":
         indices = {'道瓊': '^DJI', '那斯達克': '^IXIC', '費半': '^SOX', 'VIX': '^VIX'}
         
         c1, c2 = st.columns(2)
-        
         for i, (name, ticker) in enumerate(indices.items()):
             col = c1 if i % 2 == 0 else c2
             try:
@@ -48,36 +69,18 @@ if menu == "1. 市場大盤戰情 (美/台)":
             except:
                 col.metric(label=name, value="N/A")
         
-        try:
-            nvda = yf.Ticker('NVDA').history(period='2d')
-            tsm = yf.Ticker('TSM').history(period='2d')
-            nvda_chg = calculate_change(nvda['Close'].iloc[-1], nvda['Close'].iloc[-2])
-            tsm_chg = calculate_change(tsm['Close'].iloc[-1], tsm['Close'].iloc[-2])
-            
-            st.write("---")
-            k1, k2 = st.columns(2)
-            k1.metric("NVIDIA", f"${nvda['Close'].iloc[-1]:.2f}", f"{nvda_chg}%")
-            k2.metric("台積電 ADR", f"${tsm['Close'].iloc[-1]:.2f}", f"{tsm_chg}%")
-        except: pass
-
-        st.markdown("#### 🤖 AI 盤後解讀")
         sox_chg = market_data.get('費半', {}).get('change', 0)
         vix_chg = market_data.get('VIX', {}).get('change', 0)
         
-        us_strategy = ""
-        if sox_chg > 1 and tsm_chg > 1:
-            us_strategy = "🔥 **極度樂觀**：費半與台積電 ADR 雙強，今日台股電子股易開高，適合順勢操作 AI 與半導體族群。"
-        elif sox_chg < -1 and tsm_chg < -1:
-            us_strategy = "❄️ **空方壓力**：美股半導體重挫，台股面臨外資提款壓力，早盤避開電子權值，觀察抗跌的傳產或防禦股。"
-        elif vix_chg > 5:
-            us_strategy = "⚠️ **避險情緒高**：雖然指數波動可能不大，但 VIX 飆高暗示大戶在買保險，操作宜短進短出。"
-        else:
-            us_strategy = "⚖️ **區間震盪**：美股缺乏明確方向，台股將回歸個股表現，建議「輕指數、重個股」。"
-        st.info(us_strategy)
+        st.markdown("#### 🤖 AI 盤後解讀")
+        if sox_chg > 1: st.info("🔥 **極度樂觀**：費半強勢，有利台股電子族群開高。")
+        elif sox_chg < -1: st.info("❄️ **空方壓力**：半導體回檔，提防外資提款權值股。")
+        elif vix_chg > 5: st.warning("⚠️ **避險升溫**：VIX 飆高，市場波動恐加大。")
+        else: st.success("⚖️ **區間震盪**：方向未明，個股表現為主。")
 
     # --- Tab 2: 台股 ---
     with tab_tw:
-        st.subheader("🇹🇼 台股前日收盤 AI 戰情")
+        st.subheader("🇹🇼 台股盤勢 & 熱門族群")
         with st.spinner("分析加權指數中..."):
             try:
                 twii = yf.Ticker("^TWII").history(period="6mo")
@@ -92,7 +95,6 @@ if menu == "1. 市場大盤戰情 (美/台)":
                     tc1, tc2 = st.columns(2)
                     idx_chg = calculate_change(latest['Close'], prev['Close'])
                     vol_ratio = latest['Volume'] / twii['Volume'].rolling(5).mean().iloc[-1]
-                    
                     tc1.metric("加權指數", f"{latest['Close']:.0f}", f"{idx_chg}%")
                     tc2.metric("量能狀態", f"{vol_ratio:.1f}倍", "放量" if vol_ratio > 1 else "縮量", delta_color="off")
                     
@@ -104,22 +106,33 @@ if menu == "1. 市場大盤戰情 (美/台)":
                     prev_d = prev.get('STOCHd_14_3_3', 50)
                     
                     tw_comment = ""
-                    if close > sma20: tw_comment += "大盤站穩月線之上，技術面強勢，偏多操作。"
-                    else: tw_comment += "大盤收在月線之下，弱勢整理，建議保守。"
-                        
-                    if k > d and prev_k < prev_d: tw_comment += " **KD 黃金交叉**，短線有反彈契機。"
-                    elif k < d and prev_k > prev_d: tw_comment += " **KD 死亡交叉**，留意修正壓力。"
-                        
-                    st.success(f"{tw_comment}")
+                    if close > sma20: tw_comment += "大盤站穩月線之上，多頭格局不變。"
+                    else: tw_comment += "大盤跌破月線，短線轉弱整理。"
+                    if k > d and prev_k < prev_d: tw_comment += " 且 **KD 黃金交叉**，有反彈機會。"
                     
-                    fig = go.Figure(data=[go.Candlestick(x=twii.index, open=twii['Open'], high=twii['High'], low=twii['Low'], close=twii['Close'])])
+                    st.success(f"🤖 **AI 總結：** {tw_comment}")
+                    
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=twii.index, open=twii['Open'], high=twii['High'], low=twii['Low'], close=twii['Close'],
+                        increasing_line_color='red', decreasing_line_color='green'
+                    )])
                     fig.add_trace(go.Scatter(x=twii.index, y=twii['SMA_20'], line=dict(color='blue', width=1), name='月線'))
                     fig.update_layout(xaxis_rangeslider_visible=False, height=300, margin=dict(l=0, r=0, t=10, b=0))
                     st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.markdown("#### 🔥 本日強勢族群")
+                    df_sector = get_tw_hot_sectors()
+                    if df_sector is not None and not df_sector.empty:
+                        st.dataframe(
+                            df_sector.style.format({"漲跌幅": "{:.2f}%"})
+                            .applymap(lambda v: 'color: red' if v > 0 else 'color: green', subset=['漲跌幅']),
+                            use_container_width=True, hide_index=True
+                        )
+                    else: st.info("暫時無法取得族群資料")
             except: st.error("無法取得台股資料")
 
 # ==========================================
-# 功能 2: 個股全方位診斷 (深度豐富版)
+# 功能 2: 個股全方位診斷 (V1.8 完整邏輯復刻)
 # ==========================================
 elif menu == "2. 個股全方位診斷":
     st.header("🔎 個股診斷")
@@ -128,7 +141,7 @@ elif menu == "2. 個股全方位診斷":
     period_input = st.selectbox("週期", ["3個月", "6個月", "1年"], index=1)
         
     if st.button("🚀 開始深度診斷", use_container_width=True):
-        with st.spinner(f'AI 正在為您撰寫 {ticker_input} 完整報告...'):
+        with st.spinner(f'AI 正在進行多因子交叉分析...'):
             try:
                 # 1. 數據獲取
                 p_map = {"3個月": "3mo", "6個月": "6mo", "1年": "1y"}
@@ -146,125 +159,146 @@ elif menu == "2. 個股全方位診斷":
                     df.ta.macd(append=True)
                     df.ta.bbands(length=20, std=2, append=True)
                     
-                    # 3. 繪圖
+                    # 3. 繪圖 (保留 V1.9 紅漲綠跌)
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_width=[0.2, 0.7])
-                    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'), row=1, col=1)
+                    fig.add_trace(go.Candlestick(
+                        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線',
+                        increasing_line_color='red', decreasing_line_color='green'
+                    ), row=1, col=1)
+                    
                     if 'SMA_5' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_5'], line=dict(color='orange', width=1), name='5MA'), row=1, col=1)
                     if 'SMA_20' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], line=dict(color='blue', width=1), name='月線'), row=1, col=1)
+                    if 'SMA_60' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_60'], line=dict(color='green', width=1), name='季線'), row=1, col=1)
                     
                     if 'BBU_20_2.0' in df.columns:
                         fig.add_trace(go.Scatter(x=df.index, y=df['BBU_20_2.0'], line=dict(color='gray', width=1, dash='dot'), name='布林上'), row=1, col=1)
                         fig.add_trace(go.Scatter(x=df.index, y=df['BBL_20_2.0'], line=dict(color='gray', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(200,200,200,0.1)', name='布林下'), row=1, col=1)
 
-                    colors = ['red' if row['Open'] - row['Close'] >= 0 else 'green' for index, row in df.iterrows()]
+                    colors = ['red' if row['Close'] >= row['Open'] else 'green' for index, row in df.iterrows()]
                     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='量'), row=2, col=1)
                     fig.update_layout(xaxis_rangeslider_visible=False, height=450, margin=dict(l=0, r=0, t=10, b=0), showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
 
-                    # 4. 深度邏輯分析
+                    # 4. 數據提取與復刻 V1.8 邏輯
                     latest = df.iloc[-1]
                     prev = df.iloc[-2]
-                    
                     close = latest['Close']
-                    sma5 = latest.get('SMA_5', 0)
+                    high_price = df['High'].max()
+                    
                     sma20 = latest.get('SMA_20', 0)
-                    rsi = latest.get('RSI_14', 50)
+                    sma60 = latest.get('SMA_60', 0)
+                    bbu = latest.get('BBU_20_2.0', 0)
+                    bbl = latest.get('BBL_20_2.0', 0)
+                    
+                    # 壓力支撐
+                    resistances = []
+                    supports = []
+                    for price, name in [(sma20, "月線"), (sma60, "季線"), (bbu, "布林上"), (bbl, "布林下"), (high_price, "前高")]:
+                        if price > 0:
+                            if close < price: resistances.append((price, name))
+                            elif close > price: supports.append((price, name))
+                    
+                    resistances.sort(key=lambda x: x[0])
+                    supports.sort(key=lambda x: x[0], reverse=True)
+                    nearest_res = resistances[0] if resistances else (None, "無")
+                    nearest_sup = supports[0] if supports else (None, "無")
+
+                    # 詳細報告邏輯 (復刻 V1.8)
+                    sma5 = latest.get('SMA_5', 0)
+                    macd_hist = latest.get('MACDh_12_26_9', 0)
                     k = latest.get('STOCHk_14_3_3', 50)
                     d = latest.get('STOCHd_14_3_3', 50)
                     prev_k = prev.get('STOCHk_14_3_3', 50)
                     prev_d = prev.get('STOCHd_14_3_3', 50)
-                    macd_hist = latest.get('MACDh_12_26_9', 0)
+                    rsi = latest.get('RSI_14', 50)
+                    vol_ratio = latest['Volume'] / df['Volume'].rolling(5).mean().iloc[-1]
                     
-                    vol_today = latest['Volume']
-                    vol_avg = df['Volume'].rolling(5).mean().iloc[-1]
-                    vol_ratio = vol_today / vol_avg if vol_avg > 0 else 0
-                    
-                    # --- A. 趨勢細節 ---
+                    # A. 趨勢細節
                     trend_score = 0
                     trend_msgs = []
                     if close > sma20:
-                        trend_msgs.append("✅ 股價站上月線 (20MA)，波段偏多。")
+                        trend_msgs.append("✅ 站上月線 (20MA)，波段偏多。")
                         trend_score += 1
-                    else:
-                        trend_msgs.append("🔻 股價跌破月線，上方有壓。")
+                    else: trend_msgs.append("🔻 跌破月線，上方有壓。")
                         
                     if sma5 > sma20:
-                        trend_msgs.append("✅ 均線呈現黃金排列 (5MA > 20MA)。")
+                        trend_msgs.append("✅ 均線黃金排列 (5MA > 20MA)。")
                         trend_score += 1
                     
                     if macd_hist > 0:
-                        trend_msgs.append("✅ MACD 柱狀體翻紅，多方動能增強。")
+                        trend_msgs.append("✅ MACD 紅柱，多方動能增強。")
                         trend_score += 1
-                    else:
-                        trend_msgs.append("🔻 MACD 柱狀體翻綠，空方動能主導。")
+                    else: trend_msgs.append("🔻 MACD 綠柱，空方動能主導。")
 
-                    # --- B. 轉折細節 ---
+                    # B. 轉折細節
                     mom_msgs = []
-                    kd_status = "中性"
-                    if k > d and prev_k < prev_d:
-                        mom_msgs.append("🔥 **KD 黃金交叉**：低檔轉折訊號，有利反彈。")
-                        kd_status = "黃金交叉"
-                    elif k < d and prev_k > prev_d:
-                        mom_msgs.append("❄️ **KD 死亡交叉**：高檔轉折訊號，留意修正。")
-                        kd_status = "死亡交叉"
+                    if k > d and prev_k < prev_d: mom_msgs.append("🔥 **KD 黃金交叉**：低檔轉折訊號。")
+                    elif k < d and prev_k > prev_d: mom_msgs.append("❄️ **KD 死亡交叉**：高檔轉折訊號。")
+                    else: mom_msgs.append(f"⚪ KD 無明顯交叉 (K:{k:.0f})。")
                     
-                    if rsi > 80: mom_msgs.append("⚠️ RSI 高檔過熱 (>80)，勿過度追價。")
-                    elif rsi < 20: mom_msgs.append("🟢 RSI 進入超賣區 (<20)，醞釀反彈。")
-                    else: mom_msgs.append(f"⚪ RSI 為 {rsi:.1f}，處於合理區間。")
+                    if rsi > 80: mom_msgs.append("⚠️ RSI 高檔過熱，勿追價。")
+                    elif rsi < 20: mom_msgs.append("🟢 RSI 超賣，醞釀反彈。")
+                    else: mom_msgs.append(f"⚪ RSI {rsi:.1f} 合理區間。")
 
-                    # --- C. 資金/通道細節 ---
+                    # C. 資金/通道細節
                     vol_msgs = []
-                    if vol_ratio > 1.5: vol_msgs.append(f"🔥 今日爆量 (量能比 {vol_ratio:.1f}x)，人氣匯集。")
-                    elif vol_ratio < 0.6: vol_msgs.append(f"💤 今日量縮 (量能比 {vol_ratio:.1f}x)，觀望氣氛濃。")
-                    else: vol_msgs.append("⚪ 量能溫和，無異常變化。")
+                    if vol_ratio > 1.5: vol_msgs.append(f"🔥 今日爆量 ({vol_ratio:.1f}x)，人氣匯集。")
+                    elif vol_ratio < 0.6: vol_msgs.append(f"💤 今日量縮 ({vol_ratio:.1f}x)，觀望氣氛。")
+                    else: vol_msgs.append("⚪ 量能溫和。")
                     
-                    bbu = latest.get('BBU_20_2.0', 99999)
-                    bbl = latest.get('BBL_20_2.0', 0)
-                    if close > bbu: vol_msgs.append("⚠️ 股價觸及布林上緣，短線乖離偏大。")
-                    elif close < bbl: vol_msgs.append("🟢 股價觸及布林下緣，短線有支撐機會。")
+                    if close > bbu: vol_msgs.append("⚠️ 觸及布林上緣，乖離偏大。")
+                    elif close < bbl: vol_msgs.append("🟢 觸及布林下緣，有支撐機會。")
 
-                    # --- D. 總結評語 ---
-                    summary_text = ""
-                    action_text = ""
-                    
+                    # 操作建議
+                    advice = ""
+                    color_code = "blue"
                     if trend_score == 3:
-                        summary_text = "目前呈現**強勢多頭**格局，各項技術指標均偏多。"
-                        action_text = "順勢操作，沿 5日線 持股續抱。若未跌破月線不輕易看空。"
-                    elif trend_score == 2:
-                        summary_text = "目前呈現**震盪偏多**格局，趨勢向上但部分指標整理中。"
-                        action_text = "拉回找買點，不建議過度追高。"
-                    elif trend_score == 1:
-                        summary_text = "目前呈現**多空拉鋸**，方向尚未明確。"
-                        action_text = "觀望為主，或區間高出低進。"
+                        advice = "🔥 **強勢多頭**：趨勢向上。"
+                        if nearest_res[0] and (nearest_res[0]-close)/close < 0.02:
+                            advice += f" 但逼近壓力 **${nearest_res[0]:.2f}**，勿追高。"
+                            color_code = "orange"
+                        else:
+                            advice += " 可順勢操作。"
+                            color_code = "green"
+                    elif trend_score <= 1:
+                        advice = "🐻 **空頭弱勢**：建議觀望。"
+                        color_code = "red"
                     else:
-                        summary_text = "目前呈現**空頭弱勢**格局，上方套牢壓力大。"
-                        action_text = "反彈站在賣方，空手者不宜輕易接刀。"
+                        advice = "📈 **震盪整理**：拉回找買點。"
+                        color_code = "green"
 
-                    # 5. UI 顯示 (恢復豐富版面)
-                    st.markdown("### 📊 AI 綜合戰力評分")
-                    
-                    # 總分卡片
-                    sc1, sc2 = st.columns([1, 2])
-                    with sc1:
-                        st.metric("多方戰力", f"{trend_score}/3", kd_status)
-                    with sc2:
-                        st.info(f"**{summary_text}**\n\n💡 建議：{action_text}")
-                    
-                    # 詳細三欄分析 (在手機上會自動垂直排列，在電腦上會並排)
-                    st.markdown("#### 📝 詳細分析報告")
+                    # 5. UI 顯示 (恢復 V1.8 豐富佈局)
+                    st.markdown("### 💡 AI 操作總結")
+                    if color_code == "green": st.success(advice)
+                    elif color_code == "orange": st.warning(advice)
+                    else: st.error(advice)
+
+                    st.markdown("#### 🛑 關鍵價位")
+                    kp1, kp2 = st.columns(2)
+                    with kp1:
+                        if nearest_res[0]: st.metric("壓力", f"${nearest_res[0]:.2f}", nearest_res[1], delta_color="inverse")
+                        else: st.metric("壓力", "天空", "無")
+                    with kp2:
+                        if nearest_sup[0]: st.metric("支撐", f"${nearest_sup[0]:.2f}", nearest_sup[1])
+                        else: st.metric("支撐", "深淵", "無")
+
+                    st.markdown("#### 📝 詳細技術分析")
+                    # 這裡就是您要的：三欄詳細資料回歸！
                     c1, c2, c3 = st.columns(3)
                     
                     with c1:
                         st.markdown("**📈 趨勢面**")
+                        st.write(f"• 趨勢分: {trend_score}/3")
                         for m in trend_msgs: st.write(m)
                     
                     with c2:
                         st.markdown("**🔄 轉折面**")
-                        st.write(f"- KD值: K={k:.1f}, D={d:.1f}")
+                        st.write(f"• KD值: K{k:.0f} / D{d:.0f}")
                         for m in mom_msgs: st.write(m)
                         
                     with c3:
                         st.markdown("**💰 資金面**")
+                        st.write(f"• 量能比: {vol_ratio:.1f}倍")
                         for m in vol_msgs: st.write(m)
 
             except Exception as e:
